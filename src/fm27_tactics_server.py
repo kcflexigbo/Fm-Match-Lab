@@ -322,8 +322,11 @@ def validate_scenario(data):
                 ncell['target_player']=target
                 if c['target_position']not in [0]+[p['mask']for p in POSITIONS.values()]:raise ValueError('Marked position does not exist')
                 ncell['target_position']=c['target_position']
-                if ncell['instructions']['14']==34 and target==255:raise ValueError('Specific marking needs an opponent squad number')
-                if ncell['instructions']['14']==35 and not ncell['target_position']:raise ValueError('Specific marking needs a position')
+                # A file can carry "mark specific player/position" without the target it needs (the
+                # importer keeps the instruction but not the target). Rather than refuse the whole
+                # tactic, drop the instruction: without a target it has no effect anyway.
+                if ncell['instructions']['14']==34 and target==255:ncell['instructions']['14']=0
+                if ncell['instructions']['14']==35 and not ncell['target_position']:ncell['instructions']['14']=0
     if 'experimental_execution' in data:
         values = data['experimental_execution']
         if not isinstance(values, list) or len(values) != 2:
