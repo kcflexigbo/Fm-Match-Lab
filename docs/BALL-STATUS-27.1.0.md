@@ -1,8 +1,8 @@
 # Ball position in FM27 27.1.0 (macOS x86_64) — what is known, and what is not
 
-Status: **the live ball is not in the native match state we can reach.** Player coordinates are correct
-and validated; the only ball-like field behaves like a coarse spot, not the simulated ball. This note
-records the evidence and the dead ends so the search does not repeat them.
+Status: **the native ball is reachable headless.** Use `match + 0x12ba0` for the last ball coordinates
+applied by the simulation. `match + 0xaf0` is in the trajectory solver, not the current sample.
+The earlier negative results below are preserved because they explain why the solver field was rejected.
 
 Everything below is read-only observation of the installed engine through the host.
 
@@ -15,6 +15,52 @@ Everything below is read-only observation of the installed engine through the ho
 | Slot | `player + 0x23e1` | `0..10`; roster index ≠ slot |
 | Per-tick history | `player + 0x170` | pointer to an array, stride `0x20`, first tick `+0x200`, last `+0x208` |
 | Current tick | shared context `+0x154dc` | |
+| Last applied ball sample | `match + 0x12a30 + 0x170` = `match + 0x12ba0` | `float x, y, z`; same pitch axes as players |
+
+## Native ball coordinate path
+
+Capstone trace on the `2505117` x86_64 slice:
+
+1. `0x49e6541–0x49e6565` constructs the physics object at `match+0xad0` and passes it into the object at
+   `match+0x12a30`. The constructor at `0x4a2fe90` stores that pointer at offset zero. The latter object's
+   `+0x278` pointed back to `match` in both archived snapshots checked.
+2. `0x4a46c30` reads the match tick via the backlink, indexes the physics trajectory, and writes XY
+   to `ball+0x170` at `0x4a46e61` and Z to `ball+0x178` at `0x4a46e68`. Its diagnostic strings are
+   `match_ball.cpp` and `get_coords` (`0x5979f33`, `0x5979fad`). The match loop has the same sampling and
+   write sequence at `0x49ec45b–0x49ec7a5`.
+3. The raw lookup has two levels: `i = clamp(tick, ball[+0x2c0], ball[+0x2a8]) - ball[+0x2c0]`
+   (signed 32-bit tick bounds); `entry = physics+0xa4+12*i`; `j = u16(entry)+u8(entry+2)-1`;
+   XYZ starts at `physics+0x6d0+0x40*j`. The sample height is adjusted before writing `ball+0x178`.
+   `0x509caa0` initializes the `0x40`-stride record buffer; `0x509cbf0` advances the trajectory.
+   This describes the observed reader, **not** a retained history API: the solver reuses its storage.
+4. The `PLAYER_POSITIONS_PACKET` vtable is at `0x5d20440`. The producer branch at `0x4a0be57`
+   allocates the packet and calls `0x4f97190`. That function builds two roster vectors (stride `0x20`),
+   reading each player's `+0x140` at `0x4f97227` and `0x4f97347`. There is no appended ball sample.
+
+The host reads the cached `get_coords` output instead of calling anything or indexing a possibly
+reused trajectory. Host loop ticks are observation labels: in a 1,000-frame bounded trace, the
+current trajectory indexed with `tick-1` matched the last applied XY exactly in 747 frames, vs 190
+at `tick`. For example, host ticks 3000 and 3001 gave `(-2.82, 10.99)` and `(0.25, 10.00)`;
+at host tick 3000 the trajectory indexed at 3000 already held the latter point. Do not treat the
+cache as exact-frame playback or apply a blanket one-tick correction.
+
+### Full-match A/B check
+
+Same checked fixture and seeds, default `--tick-step 1`. Static means an XY step under 0.01 yd;
+step percentiles exclude those samples.
+
+| Seed | Ticks | Field | Within 2 yd | Static | Moving step median / p90 / p99 (yd) |
+|---|---:|---|---:|---:|---|
+| 1 | 23,377 | solver `+0xaf0` | 12.4% | 65.8% | 3.84 / 22.82 / 51.96 |
+| 1 | 23,377 | applied `+0x12ba0` | 46.5% | 37.9% | 1.48 / 3.63 / 5.88 |
+| 2 | 23,100 | solver `+0xaf0` | 12.7% | 66.6% | 3.77 / 22.92 / 52.97 |
+| 2 | 23,100 | applied `+0x12ba0` | 44.8% | 36.8% | 1.44 / 3.63 / 5.95 |
+
+Player frames were identical on both old/new pairs; scores and finish ticks were unchanged.
+Proximity and motion are comparative diagnostics, not pass/fail rules: flight, restarts and stopped
+play can legitimately make the ball distant or stationary. The named writer and trajectory reader
+are the stronger identification evidence. Existing JSONL files still contain the old field; rebuild
+and regenerate before showing the ball. The JSONL schema is unchanged.
 
 Validation: 22 players per tick, median 0.36 yd of movement per engine tick (4 ticks = 1 match second),
 sane bounds, coherent formations, and the goalkeeper's position fixes the attacking direction.
@@ -53,41 +99,21 @@ ahead of the carrier: the ball is ahead of the nearest player's movement 52% of 
    **578 distinct positions**, i.e. copies of the 22 players' own coordinates, and the `0xaf0` value itself
    appears at 24 addresses. The scan cannot separate the ball from position copies this way.
 
-## Interpretation
-
-FM's smooth ball in 2D/3D comes from the **presentation layer** — the managed `MatchSimulationData` mirror
-that the in-game recorder reads at ~10 Hz (see `fm-cache/RE-match-memory.md`). Headless that layer is never
-created (confirmed earlier: the playback interface is not constructed, and its vtable path returns zeros).
-The native state only keeps the coarse value above. So this is not a missing offset; there may be no
-per-tick native ball at all.
-
-## Where to look next
-
-1. **Per-tick history for the ball.** Players keep their own position history (`+0x170`, stride `0x20`,
-   ticks at `+0x200/+0x208`, filled by the update at `0x4b106a0`). Find the entity the same update writes
-   for the ball, or a 23rd entry in a shared frame array. That function is the anchor: `rdi` is the entity.
-2. **`PLAYER_POSITIONS_PACKET`.** RTTI name at VA `0x5a7d898`, engine path
-   `simatch/generic/engine/match_player_tactical_position.cpp`. Find its producer; the packet may carry the
-   ball as an extra entry.
-3. **Trajectory model.** If the ball is modelled as start/end/velocity (which would explain a 1.3 Hz field
-   and 23 yd steps), find the ball struct with those fields and integrate it — that is what the presentation
-   layer does. Search near `setup_basic_tactical_positions` (`0x4cd609b`) and for gravity/air-resistance
-   constants.
-4. **Managed mirror is not available headless**; do not spend time on it for this purpose.
-
 ## Reproducing the measurements
 
 ```sh
-# one match with positions (one row per on-pitch player per tick)
-FM27_POSITIONS_JSONL=/tmp/pos.jsonl \
-FM27_GAME_ROOT="/Users/kenneth/FM27/Football Manager 27.app/Contents/PlugIns/game_plugin.bundle/Contents/Resources" \
+APP="$HOME/FM27/Football Manager 27.app"
+.venv/bin/python scripts/build_native_mac.py --game-root "$APP"
+mkdir -p private/positions
+FM27_POSITIONS_JSONL="$PWD/private/positions/pos.jsonl" \
+FM27_GAME_ROOT="$APP/Contents/PlugIns/game_plugin.bundle/Contents/Resources" \
   private/engine/fm27_native/fm27_mac_host \
-  --fixture ~/fm27-port-work/saved_matches/Friendly/ShaaX_Union_v_Chelsea_411091193_VER_fm.pkm \
-  --seed 411091193 --output /tmp/run.jsonl
+  --fixture private/engine/fm27_native/fixtures/match.pkm \
+  --seed 1 --output private/positions/run.jsonl
 
 # the diagnostics (proximity, static spells, lags, transforms, ahead-of-carrier)
-.venv/bin/python scripts/ball_diagnostics.py /tmp/pos.jsonl
+.venv/bin/python scripts/ball_diagnostics.py private/positions/pos.jsonl
 ```
 
-A one-minute window of the same fixture is enough; the conclusions hold on both seed-1 and seed-15 runs
-(ShaaX and SH Port fixtures) that were tested.
+Repeat with seed 2 and a different output path for the second full match. Raw traces and comparison
+outputs stay in git-ignored `private/positions/`.

@@ -12,7 +12,7 @@ Verified on **FM27 27.1.0+2505117, macOS x86_64 slice** (`game_plugin` x86_64, L
 | What | Where | Type |
 |---|---|---|
 | Player position, current tick | `player + 0x140` | `float x, float y, float z` |
-| Ball position | `match + 0xaf0` | `float x, float y, float z` |
+| Last applied ball sample | `match + 0x12ba0` | `float x, float y, float z`; see [ball status](BALL-STATUS-27.1.0.md) |
 | On the pitch | `player + 0x1e26 + layout_slot_shift` = `0x23b6` | `uint8` (1 = on) |
 | Slot (0–10) | `player + 0x1e51 + layout_slot_shift` = `0x23e1` | `uint8` (255 = off) |
 | Team | `match + 0x15370 + 8*side` | pointer |
@@ -32,9 +32,8 @@ Measured over two full matches:
 
 * player `x` (across): about −39…+39, typical touchline ≈ ±37.5
 * player `y` (along): about −56…+56, typical goal line ≈ ±52.5…±55
-* ball `z` at rest: `0.111` — the ball radius, which is what puts the unit at yards
-* `x`/`y` 1st/99th percentile of the ball: ±40 / ±57 in play; the ball does go further
-  (restarts, into the stands) so do not clamp it when analysing
+* ball trajectory `z` includes a radius of `0.111`; the applied sample corrects for the radius
+  before storing height. The JSONL exports only the planar coordinates. Do not clamp them at the pitch edges.
 
 **The ends swap at half-time.** In seed 1 the away side scored four times before the break with
 the ball at `y ≈ +52…+54`, and after the break its goals were at `y ≈ −53`; the home side's
@@ -76,23 +75,12 @@ So `+0x140` is the frame for the current tick, copied out of a per-tick history 
 treat it as an entity position: `0x4c0f6d5` measures a distance with
 `movsd xmm1, [rax+0x140]`, and `0x4c0edd7` does the same through `[r14+0x10]`.
 
-**Goal test (the decisive check).** Every score change in seed 1 (9 goals) and 3 of 4 in seed 2
-lands with the ball at a goal line and the correct sign:
+**Ball evidence.** Goal proximity originally suggested `match+0xaf0`, but that field can hold a
+solver position ahead of the current sample. Native `MATCH_BALL::get_coords` writes the exported
+`match+0x12ba0` field; see [the disassembly and full-match comparison](BALL-STATUS-27.1.0.md).
 
-```
-seed 1  748 [0,1] ball ( -3.3,  50.7)     10273 [1,4] ball ( -3.1, -54.3)
-        1454 [0,2] ball ( -0.6,  52.4)     14952 [1,5] ball ( -0.9, -47.3)
-        5508 [0,3] ball ( -6.5,  47.0)     18526 [2,5] ball (  2.7,  54.0)
-        6884 [0,4] ball ( -3.5,  54.1)     21060 [2,6] ball ( -3.3, -53.1)
-                                           21980 [3,6] ball ( -1.7,  54.2)
-```
-
-The 4th seed-2 goal is scored at tick 305 while the ball crossed at tick 301 (`y = −55.0`); the
-host logs the score at the top of the next loop iteration, so the samples straddle it.
-
-**Adjacent ticks.** 3000 → 3001 for seed 1, 22 players, all finite and in bounds: median
-movement 0.35 yd per tick, p99 1.9 yd, max 1.15 yd for the exported field — about 4.6 yd/s at
-four ticks per second, i.e. a sprint. Formation at kickoff is a 4-4-2: goalkeeper deepest
+**Adjacent ticks.** 3000 → 3001 for seed 1, 22 players, all finite and in bounds: 19 move,
+with median 0.44 yd and maximum 1.15 yd in the quarter-second tick. At kickoff, one side has its goalkeeper deepest
 (`y ≈ +43`), back four around `+16…+20`, midfield four `+8…+11`, two forwards `+2…+3`, mirrored
 for the other side.
 
@@ -115,8 +103,9 @@ calls slot `0xb0`; the slot does not point back at the wrapper.
 * The playback object is created by the playback layer, which the headless host does not run, so
   `0x21280` would take its `rdi == null` branch and return zeros.
 
-For a host stepping `MATCH::play` directly, `player+0x140` and `match+0xaf0` are the engine's own
-values for the tick just simulated, with no interpolation and no presentation dependency.
+For a host stepping `MATCH::play` directly, `player+0x140` and `match+0x12ba0` supply native
+positions without a presentation dependency. The ball is the last applied sample at the host's
+observation point, not a promise of exact rendered-frame synchronization.
 
 ## Probe and reproduction
 
@@ -131,10 +120,10 @@ private/engine/fm27_native/fm27_mac_host --fixture <pkm> --seed 1 --output run.j
 One JSON object per player per tick, in roster order:
 
 ```json
-{"tick":3000,"side":0,"slot":0,"x":-0.46,"y":47.5,"ball_x":20.84,"ball_y":3.68}
+{"tick":3000,"side":0,"slot":0,"x":-0.46,"y":47.5,"ball_x":-2.82,"ball_y":10.99}
 ```
 
-With `FM27_POSITIONS_JSONL` unset it is one `getenv()` per tick and nothing else; the match
+With `FM27_POSITIONS_JSONL` unset the probe returns before reading positions or opening a file; the match
 result, tick count and score are unchanged. Writing it costs about 25 % of the 3.5 s simulation
 (4.4 s total for a full match, 514 k rows). The file is flushed once per tick, so the tail
 survives `finish()`'s `_exit()` and a crash, and it switches to guarded direct reads because

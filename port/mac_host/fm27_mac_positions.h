@@ -6,7 +6,7 @@
 //
 // Layout (verified on 27.1.0+2505117 x86_64, see docs/POSITIONS-27.1.0.md):
 //   player+0x140      {float x, float y, float z}  current position, yards
-//   match +0xaf0      {float x, float y, float z}  ball position, yards
+//   match +0x12ba0    {float x, float y, float z}  last applied ball sample, yards
 //   x = across the pitch, y = along it, origin at the centre spot.
 #include <cmath>
 #include <cstdio>
@@ -34,7 +34,9 @@ static void position_probe(unsigned char* match, int tick) {
         if (!file) LOG("{\"event\":\"position_probe_error\",\"reason\":\"open_failed\"}");
     }
     if (!file) return;
-    const float* ball = (const float*)(match + 0xaf0);
+    // MATCH_BALL::get_coords writes here after sampling the native trajectory.
+    // match+0xaf0 belongs to the trajectory solver and can be ahead of this tick.
+    const float* ball = (const float*)(match + 0x12a30 + 0x170);
     if (!std::isfinite(ball[0]) || !std::isfinite(ball[1])) return;
     line.clear();
     char row[192];
