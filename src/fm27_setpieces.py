@@ -30,7 +30,10 @@ def normalize(value,side,roster_size,base=None):
  if not isinstance(value,dict):raise ValueError('Invalid set-piece settings format')
  out=copy.deepcopy(base_defaults);styles=value['throw_styles']
  if len(styles)!=3:raise ValueError('Throw-ins need three strategies: defensive, middle and final third')
- out['throw_styles']=[integer(v,0,1)for v in styles]
+ out['throw_styles']=[]
+ for i,v in enumerate(styles):
+  if i<len(base_defaults['throw_styles'])and v==base_defaults['throw_styles'][i]:out['throw_styles'].append(integer(v,0,255))   # the game's own stored value
+  else:out['throw_styles'].append(integer(v,0,1))
  for g in range(8):
   v=value['role_priorities'][str(g)]
   if not isinstance(v,list)or len(v)>roster_size or any(type(i)is not int for i in v)or len(set(v))!=len(v):raise ValueError('Invalid set-piece role player order')
