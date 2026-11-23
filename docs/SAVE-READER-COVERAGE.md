@@ -64,3 +64,36 @@ Grouped by what they would give if decoded:
 
 Patches `read_section`, `_section_loan` and the region readers, calls each public API once with no
 arguments, and prints the touched and untouched entry sets.
+
+## Universal reader (fm27save)
+
+`fm27save.SaveReader` opens every entry, not only the 13 fmsave models:
+
+```python
+from fm27save import SaveReader
+r = SaveReader("…/Chelsea.fm")
+r.entries()            # every entry: name, type, sizes (157 on this save)
+r.sections()           # the 78 named sections
+r.match_files()        # the 79 per-match .scm / .apm files the save embeds
+r.raw("transfer_man")  # decompressed bytes, any entry
+r.header("scout_man")  # {"version": 0x0103, "type": "tat"}
+r.payload("news")      # bytes after the 6-byte header
+r.strings("news")      # printable runs
+r.u32s("trade_man")    # little-endian numeric view
+r.decoded("news")      # structured where implemented
+r.players()            # …and everything fmsave already models
+```
+
+Every entry begins with the same 6-byte header: `u16 0x0103`, a three-character type (`tat` for `.dat`,
+`mc` for `.cmt`), then `.`.
+
+Structured decoders implemented: `save_game_summary`, `news`, `game_info`, `memory_pools`, `fog_of_war`.
+
+## What still needs layout work
+
+The remaining `.dat` files store **indices, not names** (`shortlist_man`, `person_record_manager`,
+`manager_manager`, `weather_manager` yield no strings), so they cannot be decoded by inspection: each
+needs its record layout, joined against the name pools fmsave already builds. The practical method is a
+**save-diff**: save, perform one action in game, save again, and diff the two files — the changed region
+gives the record stride and the field offsets. Priority order is unchanged: career records and player
+history, then shortlists/scouting, then managers, then the interaction and money files.
