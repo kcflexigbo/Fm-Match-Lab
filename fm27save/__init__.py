@@ -76,6 +76,25 @@ class SaveReader:
         """The per-match files the game keeps inside the save (.scm / .apm)."""
         return [e for e in self.entries() if e["type"] in ("scm", "apm")]
 
+    def extract_matches(self, dest, limit=None):
+        """Write the embedded .apm matches out as .pkm fixtures the engine can replay.
+
+        The .apm body is the .pkm body with a different type tag and one extra byte, so the
+        conversion is: keep the 6-byte header, set the type to 'mkp', drop payload byte 2.
+        """
+        from pathlib import Path
+        dest = Path(dest); dest.mkdir(parents=True, exist_ok=True)
+        out = []
+        for e in [x for x in self.match_files() if x["type"] == "apm"]:
+            if limit is not None and len(out) >= limit:
+                break
+            raw = self.raw(e["name"])
+            conv = raw[:2] + b"mkp" + raw[5:8] + raw[9:]
+            path = dest / (e["name"] + ".pkm")
+            path.write_bytes(conv)
+            out.append({"name": e["name"], "path": str(path), "bytes": len(conv)})
+        return out
+
     # ---------------------------------------------------------------- structured decoders
     def decoded(self, name: str):
         fn = getattr(self, "_dec_" + name, None)

@@ -97,3 +97,24 @@ needs its record layout, joined against the name pools fmsave already builds. Th
 **save-diff**: save, perform one action in game, save again, and diff the two files — the changed region
 gives the record stride and the field offsets. Priority order is unchanged: career records and player
 history, then shortlists/scouting, then managers, then the interaction and money files.
+
+## Embedded matches (new)
+
+The save also carries per-match files: on this save **33 `.apm`** and **46 `.scm`**.
+
+`.apm` is a match pack with a different type tag (`mpa` instead of `mkp`) and one extra payload byte.
+Converting is exact and lossless:
+
+```
+pkm = apm[:2] + b"mkp" + apm[5:8] + apm[9:]
+```
+
+`SaveReader.extract_matches(dest)` writes them out as replayable `.pkm` fixtures. Verified: the first
+extracted file replays through the engine (`natural_match_finished`, 2–2) and the files carry team
+names (Chelsea, Man City, West Ham United), so they are real matches, not summaries.
+
+This means **any match the save retains can be analysed headlessly later** — the in-game limit of ten
+saved matches no longer applies to the archive inside the save.
+
+`.scm` files use type `mst` and are not decoded yet; they are likely per-match statistics rather than
+packages.
